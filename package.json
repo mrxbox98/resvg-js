@@ -134,5 +134,19 @@
     "arrowParens": "always",
     "parser": "typescript"
   },
-  "packageManager": "yarn@3.8.5"
+  "packageManager": "yarn@3.8.5",
+  "optionalDependencies": {
+    "@resvg/resvg-js-win32-x64-msvc": "2.6.3-alpha.2",
+    "@resvg/resvg-js-darwin-x64": "2.6.3-alpha.2",
+    "@resvg/resvg-js-linux-x64-gnu": "2.6.3-alpha.2",
+    "@resvg/resvg-js-linux-x64-musl": "2.6.3-alpha.2",
+    "@resvg/resvg-js-linux-arm64-gnu": "2.6.3-alpha.2",
+    "@resvg/resvg-js-win32-ia32-msvc": "2.6.3-alpha.2",
+    "@resvg/resvg-js-linux-arm-gnueabihf": "2.6.3-alpha.2",
+    "@resvg/resvg-js-darwin-arm64": "2.6.3-alpha.2",
+    "@resvg/resvg-js-android-arm64": "2.6.3-alpha.2",
+    "@resvg/resvg-js-android-arm-eabi": "2.6.3-alpha.2",
+    "@resvg/resvg-js-linux-arm64-musl": "2.6.3-alpha.2",
+    "@resvg/resvg-js-win32-arm64-msvc": "2.6.3-alpha.2"
+  }
 }
