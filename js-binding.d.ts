@@ -16,30 +16,6 @@ export declare class Resvg {
   render(): RenderedImage
   /** Output usvg-simplified SVG string */
   toString(): string
-  /**
-   * Calculate a maximum bounding box of all visible elements in this SVG.
-   *
-   * Note: path bounding box are approx values.
-   */
-  innerBBox(): BBox | undefined
-  /**
-   * Calculate a maximum bounding box of all visible elements in this SVG.
-   * This will first apply transform.
-   * Similar to `SVGGraphicsElement.getBBox()` DOM API.
-   */
-  getBBox(): BBox | undefined
-  /**
-   * Use a given `BBox` to crop the svg. Currently this method simply changes
-   * the viewbox/size of the svg and do not move the elements for simplicity
-   *
-   * # Arguments
-   * * `bbox` - The bounding box to crop to
-   * * `padding` - Optional bleed area around the crop box (default: 0.0)
-   * * `square` - Optional flag to make the crop area square using the larger dimension (default: false)
-   */
-  cropByBBox(bbox: BBox, padding?: number | undefined | null, square?: boolean | undefined | null): void
-  imagesToResolve(): Array<string>
-  resolveImage(href: string, buffer: Buffer): void
   /** Get the SVG width */
   get width(): number
   /** Get the SVG height */

@@ -2,24 +2,17 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-use std::sync::Arc;
 
 #[cfg(not(target_arch = "wasm32"))]
 use napi::bindgen_prelude::{
-    AbortSignal, AsyncTask, Buffer, Either, Error as NapiError, Task, Undefined,
+    AbortSignal, AsyncTask, Buffer, Either, Error as NapiError, Task,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use napi_derive::napi;
 use options::JsOptions;
-use pathfinder_content::{
-    outline::{Contour, Outline},
-    stroke::{LineCap, LineJoin, OutlineStrokeToFill, StrokeStyle},
-};
-use pathfinder_geometry::rect::RectF;
-use pathfinder_geometry::vector::Vector2F;
 use resvg::{
-    tiny_skia::{PathSegment, Pixmap, Point},
-    usvg::{self, ImageKind, NodeKind, TreeParsing, TreeTextToPath},
+    tiny_skia::Pixmap,
+    usvg::{self},
 };
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::{
@@ -32,7 +25,6 @@ mod fonts;
 mod options;
 
 use error::Error;
-use usvg::NodeExt;
 
 #[cfg(all(not(target_family = "wasm"), not(debug_assertions),))]
 #[cfg(not(all(target_os = "linux", target_arch = "arm")))]
@@ -149,18 +141,22 @@ impl Resvg {
             .and_then(|o| serde_json::from_str(o.as_str()).ok())
             .unwrap_or_default();
         let _ = env_logger::builder()
-            .filter_level(js_options.log_level)
+            .filter_level(js_options.log_level) 
             .try_init();
 
-        let (mut opts, fontdb) = js_options.to_usvg_options();
-        options::tweak_usvg_options(&mut opts);
+        let opts = js_options.to_usvg_options();
         // Parse the SVG string into a tree.
-        let mut tree = match svg {
+        let tree = match svg {
             Either::A(a) => usvg::Tree::from_str(a.as_str(), &opts),
             Either::B(b) => usvg::Tree::from_data(b.as_ref(), &opts),
         }
         .map_err(|e| napi::Error::from_reason(format!("{e}")))?;
-        tree.convert_text(&fontdb);
+
+        // tree.convert_text(&fontdb);
+        // Drop `opts` (which may borrow from `js_options`) before we move
+        // `js_options` into the returned `Resvg`. This avoids the "cannot
+        // move out of `js_options` because it is borrowed" error.
+    drop(opts);
         Ok(Resvg { tree, js_options })
     }
 
@@ -173,224 +169,19 @@ impl Resvg {
     #[napi]
     /// Output usvg-simplified SVG string
     pub fn to_string(&self) -> String {
-        use usvg::TreeWriting;
-        self.tree.to_string(&usvg::XmlOptions::default())
-    }
-
-    #[napi(js_name = innerBBox)]
-    /// Calculate a maximum bounding box of all visible elements in this SVG.
-    ///
-    /// Note: path bounding box are approx values.
-
-    // Either<T, Undefined> depends on napi 2.4.3
-    // https://github.com/napi-rs/napi-rs/releases/tag/napi@2.4.3
-    pub fn inner_bbox(&self) -> Either<BBox, Undefined> {
-        let rect = self.tree.view_box.rect;
-        let rect = points_to_rect(
-            Vector2F::new(rect.x(), rect.y()),
-            Vector2F::new(rect.right(), rect.bottom()),
-        );
-        let mut v = None;
-        for child in self.tree.root.children() {
-            let child_viewbox = match self.node_bbox(child).and_then(|v| v.intersection(rect)) {
-                Some(v) => v,
-                None => continue,
-            };
-            if let Some(v) = v.as_mut() {
-                *v = child_viewbox.union_rect(*v);
-            } else {
-                v = Some(child_viewbox)
-            };
-        }
-        match v {
-            Some(v) => Either::A(BBox {
-                x: v.min_x().floor() as f64,
-                y: v.min_y().floor() as f64,
-                width: (v.max_x().ceil() - v.min_x().floor()) as f64,
-                height: (v.max_y().ceil() - v.min_y().floor()) as f64,
-            }),
-            None => Either::B(()),
-        }
-    }
-
-    #[napi(js_name = getBBox)]
-    /// Calculate a maximum bounding box of all visible elements in this SVG.
-    /// This will first apply transform.
-    /// Similar to `SVGGraphicsElement.getBBox()` DOM API.
-
-    // Either<T, Undefined> depends on napi 2.4.3
-    // https://github.com/napi-rs/napi-rs/releases/tag/napi@2.4.3
-    pub fn get_bbox(&self) -> Either<BBox, Undefined> {
-        match self.tree.root.calculate_bbox() {
-            Some(bbox) => Either::A(BBox {
-                x: bbox.x() as f64,
-                y: bbox.y() as f64,
-                width: bbox.width() as f64,
-                height: bbox.height() as f64,
-            }),
-            None => Either::B(()),
-        }
-    }
-
-    #[napi(js_name = cropByBBox)]
-    /// Use a given `BBox` to crop the svg. Currently this method simply changes
-    /// the viewbox/size of the svg and do not move the elements for simplicity
-    ///
-    /// # Arguments
-    /// * `bbox` - The bounding box to crop to
-    /// * `padding` - Optional bleed area around the crop box (default: 0.0)
-    /// * `square` - Optional flag to make the crop area square using the larger dimension (default: false)
-    pub fn crop_by_bbox(&mut self, bbox: &BBox, padding: Option<f64>, square: Option<bool>) {
-        if !bbox.width.is_finite() || !bbox.height.is_finite() {
-            return;
-        }
-        let pixel_padding = padding.unwrap_or(0.0) as f32;
-        let square = square.unwrap_or(false);
-
-        let mut x = bbox.x as f32;
-        let mut y = bbox.y as f32;
-        let mut width = bbox.width as f32;
-        let mut height = bbox.height as f32;
-
-        // Make square if requested
-        if square && width != height {
-            let max_dimension = width.max(height);
-            let width_diff = max_dimension - width;
-            let height_diff = max_dimension - height;
-
-            // Adjust position to center the square
-            x -= width_diff / 2.0;
-            y -= height_diff / 2.0;
-            width = max_dimension;
-            height = max_dimension;
-        }
-
-        // Get current tree size before any modifications
-        let current_tree_size = self.tree.size;
-
-        // Check if fitTo is being used (not Original)
-        match &self.js_options.fit_to {
-            options::FitToDef::Original => {
-                // Case 1: No fitTo - crop to bbox size, then center and scale content to fit (bbox_size - padding*2)
-                // Calculate the content size (bbox size minus padding), clamp to 0 for negative values
-                let content_width = (width - pixel_padding * 2.0).max(0.0);
-                let content_height = (height - pixel_padding * 2.0).max(0.0);
-
-                // The final SVG size should be the bbox size
-                let final_svg_width = width;
-                let final_svg_height = height;
-
-                // Handle edge case: if content size is 0, create viewBox outside visible area for transparent result
-                if content_width == 0.0 || content_height == 0.0 {
-                    // Create a viewBox that's positioned outside the visible area to produce transparent result
-                    self.tree.view_box.rect =
-                        usvg::NonZeroRect::from_xywh(x + width, y + height, 1.0, 1.0).unwrap();
-                    self.tree.size =
-                        usvg::Size::from_wh(final_svg_width, final_svg_height).unwrap();
-                } else {
-                    // Calculate the scale factor to fit the content within the padding
-                    let scale_x = content_width / width;
-                    let scale_y = content_height / height;
-                    let scale = scale_x.min(scale_y);
-
-                    // Create a viewBox that shows the original bbox area, scaled and centered
-                    let bbox_center_x = x + width / 2.0;
-                    let bbox_center_y = y + height / 2.0;
-
-                    let viewbox_width = width / scale;
-                    let viewbox_height = height / scale;
-
-                    let viewbox_x = bbox_center_x - viewbox_width / 2.0;
-                    let viewbox_y = bbox_center_y - viewbox_height / 2.0;
-
-                    self.tree.view_box.rect = usvg::NonZeroRect::from_xywh(
-                        viewbox_x,
-                        viewbox_y,
-                        viewbox_width,
-                        viewbox_height,
-                    )
-                    .unwrap();
-                    self.tree.size =
-                        usvg::Size::from_wh(final_svg_width, final_svg_height).unwrap();
-                }
-            }
-            _ => {
-                // Case 2: fitTo is used - padding is absolute pixels within the target size
-                match self.js_options.fit_to.fit_to(current_tree_size) {
-                    Ok((target_width, target_height, _)) => {
-                        // Calculate the content size in the final render (target size minus padding), clamp to 0 for negative values
-                        let content_target_width =
-                            (target_width as f32 - pixel_padding * 2.0).max(0.0);
-                        let content_target_height =
-                            (target_height as f32 - pixel_padding * 2.0).max(0.0);
-
-                        // Handle edge case: if content size is 0, create viewBox outside visible area for transparent result
-                        if content_target_width == 0.0 || content_target_height == 0.0 {
-                            // Create a viewBox that's positioned outside the visible area to produce transparent result
-                            self.tree.view_box.rect =
-                                usvg::NonZeroRect::from_xywh(x + width, y + height, 1.0, 1.0)
-                                    .unwrap();
-                            self.tree.size =
-                                usvg::Size::from_wh(target_width as f32, target_height as f32)
-                                    .unwrap();
-                        } else {
-                            // Calculate what SVG size we need to achieve the target final size after fitTo
-                            let required_svg_width =
-                                width * target_width as f32 / content_target_width;
-                            let required_svg_height =
-                                height * target_height as f32 / content_target_height;
-
-                            // Create a viewBox that centers the original bbox within the required SVG size
-                            let bbox_center_x = x + width / 2.0;
-                            let bbox_center_y = y + height / 2.0;
-
-                            let viewbox_x = bbox_center_x - required_svg_width / 2.0;
-                            let viewbox_y = bbox_center_y - required_svg_height / 2.0;
-
-                            self.tree.view_box.rect = usvg::NonZeroRect::from_xywh(
-                                viewbox_x,
-                                viewbox_y,
-                                required_svg_width,
-                                required_svg_height,
-                            )
-                            .unwrap();
-                            self.tree.size =
-                                usvg::Size::from_wh(required_svg_width, required_svg_height)
-                                    .unwrap();
-                        }
-                    }
-                    Err(_) => {
-                        // Fallback to no padding
-                        self.tree.view_box.rect =
-                            usvg::NonZeroRect::from_xywh(x, y, width, height).unwrap();
-                        self.tree.size = usvg::Size::from_wh(width, height).unwrap();
-                    }
-                }
-            }
-        }
-    }
-
-    #[napi]
-    pub fn images_to_resolve(&self) -> Result<Vec<String>, NapiError> {
-        Ok(self.images_to_resolve_inner()?)
-    }
-
-    #[napi]
-    pub fn resolve_image(&self, href: String, buffer: Buffer) -> Result<(), NapiError> {
-        let buffer = buffer.to_vec();
-        Ok(self.resolve_image_inner(href, buffer)?)
+        self.tree.to_string(&usvg::WriteOptions::default())
     }
 
     /// Get the SVG width
     #[napi(getter)]
     pub fn width(&self) -> f32 {
-        self.tree.size.width().round()
+        self.tree.size().width().round()
     }
 
     /// Get the SVG height
     #[napi(getter)]
     pub fn height(&self) -> f32 {
-        self.tree.size.height().round()
+        self.tree.size().height().round()
     }
 }
 
@@ -407,11 +198,14 @@ impl Resvg {
             .and_then(|o| serde_json::from_str(o.as_str()).ok())
             .unwrap_or_default();
 
-        let (mut opts, mut fontdb) = js_options.to_usvg_options();
+        let mut opts = js_options.to_usvg_options();
 
+        // Create a font database and load wasm-supplied fonts into it,
+        // then replace the options' fontdb with the populated one.
+        let mut fontdb = resvg::usvg::fontdb::Database::new();
         crate::fonts::load_wasm_fonts(&js_options.font, custom_font_buffers, &mut fontdb)?;
+        opts.fontdb = std::sync::Arc::new(fontdb);
 
-        options::tweak_usvg_options(&mut opts);
         let mut tree = if js_sys::Uint8Array::instanceof(&svg) {
             let uintarray = js_sys::Uint8Array::unchecked_from_js_ref(&svg);
             let svg_buffer = uintarray.to_vec();
@@ -421,373 +215,41 @@ impl Resvg {
         } else {
             Err(Error::InvalidInput)
         }?;
-        tree.convert_text(&fontdb);
+        // Drop `opts` (which may borrow from `js_options`) before we move
+        // `js_options` into the returned `Resvg` to avoid borrow/move conflicts.
+        drop(opts);
         Ok(Resvg { tree, js_options })
     }
 
     /// Get the SVG width
     #[wasm_bindgen(getter)]
     pub fn width(&self) -> f32 {
-        self.tree.size.width().round()
+        self.tree.size().width().round()
     }
 
     /// Get the SVG height
     #[wasm_bindgen(getter)]
     pub fn height(&self) -> f32 {
-        self.tree.size.height().round()
+        self.tree.size().height().round()
     }
 
     /// Renders an SVG in Wasm
     pub fn render(&self) -> Result<RenderedImage, js_sys::Error> {
         Ok(self.render_inner()?)
     }
-
     /// Output usvg-simplified SVG string
     #[wasm_bindgen(js_name = toString)]
     pub fn to_string(&self) -> String {
-        use usvg::TreeWriting;
-        self.tree.to_string(&usvg::XmlOptions::default())
-    }
-
-    /// Calculate a maximum bounding box of all visible elements in this SVG.
-    ///
-    /// Note: path bounding box are approx values.
-    #[wasm_bindgen(js_name = innerBBox)]
-    pub fn inner_bbox(&self) -> Option<BBox> {
-        let rect = self.tree.view_box.rect;
-        let rect = points_to_rect(
-            Vector2F::new(rect.x(), rect.y()),
-            Vector2F::new(rect.right(), rect.bottom()),
-        );
-        let mut v = None;
-        for child in self.tree.root.children() {
-            let child_viewbox = match self.node_bbox(child).and_then(|v| v.intersection(rect)) {
-                Some(v) => v,
-                None => continue,
-            };
-            if let Some(v) = v.as_mut() {
-                *v = child_viewbox.union_rect(*v);
-            } else {
-                v = Some(child_viewbox)
-            };
-        }
-        let v = v?;
-        Some(BBox {
-            x: v.min_x().floor() as f64,
-            y: v.min_y().floor() as f64,
-            width: (v.max_x().ceil() - v.min_x().floor()) as f64,
-            height: (v.max_y().ceil() - v.min_y().floor()) as f64,
-        })
-    }
-
-    #[wasm_bindgen(js_name = getBBox)]
-    /// Calculate a maximum bounding box of all visible elements in this SVG.
-    /// This will first apply transform.
-    /// Similar to `SVGGraphicsElement.getBBox()` DOM API.
-    pub fn get_bbox(&self) -> Option<BBox> {
-        let bbox = self.tree.root.calculate_bbox()?;
-        Some(BBox {
-            x: bbox.x() as f64,
-            y: bbox.y() as f64,
-            width: bbox.width() as f64,
-            height: bbox.height() as f64,
-        })
-    }
-
-    #[wasm_bindgen(js_name = cropByBBox)]
-    /// Use a given `BBox` to crop the svg. Currently this method simply changes
-    /// the viewbox/size of the svg and do not move the elements for simplicity
-    ///
-    /// # Arguments
-    /// * `bbox` - The bounding box to crop to
-    /// * `padding` - Optional bleed area around the crop box (default: 0.0)
-    /// * `square` - Optional flag to make the crop area square using the larger dimension (default: false)
-    pub fn crop_by_bbox(&mut self, bbox: &BBox, padding: Option<f64>, square: Option<bool>) {
-        if !bbox.width.is_finite() || !bbox.height.is_finite() {
-            return;
-        }
-        let pixel_padding = padding.unwrap_or(0.0) as f32;
-        let square = square.unwrap_or(false);
-
-        let mut x = bbox.x as f32;
-        let mut y = bbox.y as f32;
-        let mut width = bbox.width as f32;
-        let mut height = bbox.height as f32;
-
-        // Make square if requested
-        if square && width != height {
-            let max_dimension = width.max(height);
-            let width_diff = max_dimension - width;
-            let height_diff = max_dimension - height;
-
-            // Adjust position to center the square
-            x -= width_diff / 2.0;
-            y -= height_diff / 2.0;
-            width = max_dimension;
-            height = max_dimension;
-        }
-
-        // Get current tree size before any modifications
-        let current_tree_size = self.tree.size;
-
-        // Check if fitTo is being used (not Original)
-        match &self.js_options.fit_to {
-            options::FitToDef::Original => {
-                // Case 1: No fitTo - crop to bbox size, then center and scale content to fit (bbox_size - padding*2)
-                // Calculate the content size (bbox size minus padding), clamp to 0 for negative values
-                let content_width = (width - pixel_padding * 2.0).max(0.0);
-                let content_height = (height - pixel_padding * 2.0).max(0.0);
-
-                // The final SVG size should be the bbox size
-                let final_svg_width = width;
-                let final_svg_height = height;
-
-                // Handle edge case: if content size is 0, create viewBox outside visible area for transparent result
-                if content_width == 0.0 || content_height == 0.0 {
-                    // Create a viewBox that's positioned outside the visible area to produce transparent result
-                    self.tree.view_box.rect =
-                        usvg::NonZeroRect::from_xywh(x + width, y + height, 1.0, 1.0).unwrap();
-                    self.tree.size =
-                        usvg::Size::from_wh(final_svg_width, final_svg_height).unwrap();
-                } else {
-                    // Calculate the scale factor to fit the content within the padding
-                    let scale_x = content_width / width;
-                    let scale_y = content_height / height;
-                    let scale = scale_x.min(scale_y);
-
-                    // Create a viewBox that shows the original bbox area, scaled and centered
-                    let bbox_center_x = x + width / 2.0;
-                    let bbox_center_y = y + height / 2.0;
-
-                    let viewbox_width = width / scale;
-                    let viewbox_height = height / scale;
-
-                    let viewbox_x = bbox_center_x - viewbox_width / 2.0;
-                    let viewbox_y = bbox_center_y - viewbox_height / 2.0;
-
-                    self.tree.view_box.rect = usvg::NonZeroRect::from_xywh(
-                        viewbox_x,
-                        viewbox_y,
-                        viewbox_width,
-                        viewbox_height,
-                    )
-                    .unwrap();
-                    self.tree.size =
-                        usvg::Size::from_wh(final_svg_width, final_svg_height).unwrap();
-                }
-            }
-            _ => {
-                // Case 2: fitTo is used - padding is absolute pixels within the target size
-                match self.js_options.fit_to.fit_to(current_tree_size) {
-                    Ok((target_width, target_height, _)) => {
-                        // Calculate the content size in the final render (target size minus padding), clamp to 0 for negative values
-                        let content_target_width =
-                            (target_width as f32 - pixel_padding * 2.0).max(0.0);
-                        let content_target_height =
-                            (target_height as f32 - pixel_padding * 2.0).max(0.0);
-
-                        // Handle edge case: if content size is 0, create viewBox outside visible area for transparent result
-                        if content_target_width == 0.0 || content_target_height == 0.0 {
-                            // Create a viewBox that's positioned outside the visible area to produce transparent result
-                            self.tree.view_box.rect =
-                                usvg::NonZeroRect::from_xywh(x + width, y + height, 1.0, 1.0)
-                                    .unwrap();
-                            self.tree.size =
-                                usvg::Size::from_wh(target_width as f32, target_height as f32)
-                                    .unwrap();
-                        } else {
-                            // Calculate what SVG size we need to achieve the target final size after fitTo
-                            let required_svg_width =
-                                width * target_width as f32 / content_target_width;
-                            let required_svg_height =
-                                height * target_height as f32 / content_target_height;
-
-                            // Create a viewBox that centers the original bbox within the required SVG size
-                            let bbox_center_x = x + width / 2.0;
-                            let bbox_center_y = y + height / 2.0;
-
-                            let viewbox_x = bbox_center_x - required_svg_width / 2.0;
-                            let viewbox_y = bbox_center_y - required_svg_height / 2.0;
-
-                            self.tree.view_box.rect = usvg::NonZeroRect::from_xywh(
-                                viewbox_x,
-                                viewbox_y,
-                                required_svg_width,
-                                required_svg_height,
-                            )
-                            .unwrap();
-                            self.tree.size =
-                                usvg::Size::from_wh(required_svg_width, required_svg_height)
-                                    .unwrap();
-                        }
-                    }
-                    Err(_) => {
-                        // Fallback to no padding
-                        self.tree.view_box.rect =
-                            usvg::NonZeroRect::from_xywh(x, y, width, height).unwrap();
-                        self.tree.size = usvg::Size::from_wh(width, height).unwrap();
-                    }
-                }
-            }
-        }
-    }
-
-    #[wasm_bindgen(js_name = imagesToResolve)]
-    pub fn images_to_resolve(&self) -> Result<js_sys::Array, js_sys::Error> {
-        let images = self.images_to_resolve_inner()?;
-        let result = js_sys::Array::from_iter(images.into_iter().map(|s| JsValue::from(s)));
-        Ok(result)
-    }
-
-    #[wasm_bindgen(js_name = resolveImage)]
-    pub fn resolve_image(
-        &self,
-        href: String,
-        buffer: js_sys::Uint8Array,
-    ) -> Result<(), js_sys::Error> {
-        let buffer = buffer.to_vec();
-        Ok(self.resolve_image_inner(href, buffer)?)
+        self.tree.to_string(&usvg::WriteOptions::default())
     }
 }
 
 impl Resvg {
-    fn node_bbox(&self, node: usvg::Node) -> Option<RectF> {
-        let transform = node.borrow().transform();
-        let bbox = match &*node.borrow() {
-            usvg::NodeKind::Path(p) => {
-                let no_fill = p.fill.is_none()
-                    || p.fill
-                        .as_ref()
-                        .map(|f| f.opacity.get() == 0.0)
-                        .unwrap_or_default();
-                let no_stroke = p.stroke.is_none()
-                    || p.stroke
-                        .as_ref()
-                        .map(|f| f.opacity.get() == 0.0)
-                        .unwrap_or_default();
-                if no_fill && no_stroke {
-                    return None;
-                }
-                let mut outline = Outline::new();
-                let mut contour = Contour::new();
-                let mut iter = p.data.segments().peekable();
-                while let Some(seg) = iter.next() {
-                    match seg {
-                        PathSegment::MoveTo(p) => {
-                            if !contour.is_empty() {
-                                outline
-                                    .push_contour(std::mem::replace(&mut contour, Contour::new()));
-                            }
-                            contour.push_endpoint(Vector2F::new(p.x, p.y))
-                        }
-                        PathSegment::LineTo(p) => {
-                            let v = Vector2F::new(p.x, p.y);
-                            if let Some(PathSegment::Close) = iter.peek() {
-                                let first = contour.position_of(0);
-                                if (first - v).square_length() < 1.0 {
-                                    continue;
-                                }
-                            }
-                            contour.push_endpoint(v);
-                        }
-                        PathSegment::CubicTo(p1, p2, p) => {
-                            contour.push_cubic(
-                                Vector2F::new(p1.x, p1.y),
-                                Vector2F::new(p2.x, p2.y),
-                                Vector2F::new(p.x, p.y),
-                            );
-                        }
-                        PathSegment::QuadTo(p1, p) => {
-                            contour
-                                .push_quadratic(Vector2F::new(p1.x, p1.y), Vector2F::new(p.x, p.y));
-                        }
-                        PathSegment::Close => {
-                            contour.close();
-                            outline.push_contour(std::mem::replace(&mut contour, Contour::new()));
-                        }
-                    }
-                }
-                if !contour.is_empty() {
-                    outline.push_contour(std::mem::replace(&mut contour, Contour::new()));
-                }
-                if let Some(stroke) = p.stroke.as_ref() {
-                    if !no_stroke {
-                        let mut style = StrokeStyle::default();
-                        style.line_width = stroke.width.get() as f32;
-                        style.line_join = LineJoin::Miter(style.line_width);
-                        style.line_cap = match stroke.linecap {
-                            usvg::LineCap::Butt => LineCap::Butt,
-                            usvg::LineCap::Round => LineCap::Round,
-                            usvg::LineCap::Square => LineCap::Square,
-                        };
-                        let mut filler = OutlineStrokeToFill::new(&outline, style);
-                        filler.offset();
-                        outline = filler.into_outline();
-                    }
-                }
-                Some(outline.bounds())
-            }
-            usvg::NodeKind::Group(g) => {
-                let clippath = if let Some(clippath) =
-                    g.clip_path.as_ref().and_then(|n| n.root.first_child())
-                {
-                    self.node_bbox(clippath)
-                } else if let Some(mask) = g.mask.as_ref().and_then(|n| n.root.first_child()) {
-                    self.node_bbox(mask)
-                } else {
-                    Some(self.viewbox())
-                }?;
-                let mut v = None;
-                for child in node.children() {
-                    let child_viewbox =
-                        match self.node_bbox(child).and_then(|v| v.intersection(clippath)) {
-                            Some(v) => v,
-                            None => continue,
-                        };
-                    if let Some(v) = v.as_mut() {
-                        *v = child_viewbox.union_rect(*v);
-                    } else {
-                        v = Some(child_viewbox)
-                    };
-                }
-                v.and_then(|v| v.intersection(self.viewbox()))
-            }
-            usvg::NodeKind::Image(image) => {
-                let rect = image.view_box.rect;
-                Some(points_to_rect(
-                    Vector2F::new(rect.x(), rect.y()),
-                    Vector2F::new(rect.right(), rect.bottom()),
-                ))
-            }
-            usvg::NodeKind::Text(_) => None,
-        }?;
-        let mut pts = vec![
-            Point::from_xy(bbox.min_x(), bbox.min_y()),
-            Point::from_xy(bbox.max_x(), bbox.max_y()),
-            Point::from_xy(bbox.min_x(), bbox.max_y()),
-            Point::from_xy(bbox.max_x(), bbox.min_y()),
-        ];
-        transform.map_points(&mut pts);
-        let x_min = pts[0].x.min(pts[1].x).min(pts[2].x).min(pts[3].x);
-        let x_max = pts[0].x.max(pts[1].x).max(pts[2].x).max(pts[3].x);
-        let y_min = pts[0].y.min(pts[1].y).min(pts[2].y).min(pts[3].y);
-        let y_max = pts[0].y.max(pts[1].y).max(pts[2].y).max(pts[3].y);
-        let r = points_to_rect(Vector2F::new(x_min, y_min), Vector2F::new(x_max, y_max));
-        Some(r)
-    }
-
-    fn viewbox(&self) -> RectF {
-        RectF::new(
-            Vector2F::new(0.0, 0.0),
-            Vector2F::new(self.width() as f32, self.height() as f32),
-        )
-    }
-
     fn render_inner(&self) -> Result<RenderedImage, Error> {
-        let (width, height, transform) = self.js_options.fit_to.fit_to(self.tree.size)?;
+        let (width, height, transform) = self.js_options.fit_to.fit_to(self.tree.size())?;
         let mut pixmap = self.js_options.create_pixmap(width, height)?;
         // Render the tree
-        let _image = resvg::Tree::from_usvg(&self.tree).render(transform, &mut pixmap.as_mut());
+        let _image = resvg::render(&self.tree, transform, &mut pixmap.as_mut());
 
         // Crop the SVG
         let crop_rect = resvg::tiny_skia::IntRect::from_ltrb(
@@ -802,43 +264,6 @@ impl Resvg {
         }
 
         Ok(RenderedImage { pix: pixmap })
-    }
-
-    fn images_to_resolve_inner(&self) -> Result<Vec<String>, Error> {
-        let mut data = vec![];
-        for node in self.tree.root.descendants() {
-            if let NodeKind::Image(i) = &mut *node.borrow_mut() {
-                if let ImageKind::RAW(_, _, buffer) = &mut i.kind {
-                    let s = String::from_utf8(buffer.as_slice().to_vec())?;
-                    data.push(s);
-                }
-            }
-        }
-        Ok(data)
-    }
-
-    fn resolve_image_inner(&self, href: String, buffer: Vec<u8>) -> Result<(), Error> {
-        let resolver = usvg::ImageHrefResolver::default_data_resolver();
-        let (options, _) = self.js_options.to_usvg_options();
-        let mime = MimeType::parse(&buffer)?.mime_type().to_string();
-
-        for node in self.tree.root.descendants() {
-            if let NodeKind::Image(i) = &mut *node.borrow_mut() {
-                let matched = if let ImageKind::RAW(_, _, data) = &mut i.kind {
-                    let s = String::from_utf8(data.as_slice().to_vec()).map_err(Error::from)?;
-                    s == href
-                } else {
-                    false
-                };
-                if matched {
-                    let data = (resolver)(&mime, Arc::new(buffer.clone()), &options);
-                    if let Some(kind) = data {
-                        i.kind = kind;
-                    }
-                }
-            }
-        }
-        Ok(())
     }
 }
 
@@ -879,10 +304,6 @@ pub fn render_async(
         Some(s) => AsyncTask::with_signal(AsyncRenderer { options, svg }, s),
         None => AsyncTask::new(AsyncRenderer { options, svg }),
     }
-}
-
-fn points_to_rect(min: Vector2F, max: Vector2F) -> RectF {
-    RectF::new(min, max - min)
 }
 
 // Detects the file type by magic number.

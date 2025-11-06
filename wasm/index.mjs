@@ -94,12 +94,6 @@ function getStringFromWasm0(ptr, len) {
   ptr = ptr >>> 0;
   return cachedTextDecoder.decode(getUint8Memory0().subarray(ptr, ptr + len));
 }
-function _assertClass(instance, klass) {
-  if (!(instance instanceof klass)) {
-    throw new Error(`expected instance of ${klass.name}`);
-  }
-  return instance.ptr;
-}
 function handleError(f, args) {
   try {
     return f.apply(this, args);
@@ -110,77 +104,6 @@ function handleError(f, args) {
 var BBoxFinalization = typeof FinalizationRegistry === "undefined" ? { register: () => {
 }, unregister: () => {
 } } : new FinalizationRegistry((ptr) => wasm.__wbg_bbox_free(ptr >>> 0));
-var BBox = class _BBox {
-  static __wrap(ptr) {
-    ptr = ptr >>> 0;
-    const obj = Object.create(_BBox.prototype);
-    obj.__wbg_ptr = ptr;
-    BBoxFinalization.register(obj, obj.__wbg_ptr, obj);
-    return obj;
-  }
-  __destroy_into_raw() {
-    const ptr = this.__wbg_ptr;
-    this.__wbg_ptr = 0;
-    BBoxFinalization.unregister(this);
-    return ptr;
-  }
-  free() {
-    const ptr = this.__destroy_into_raw();
-    wasm.__wbg_bbox_free(ptr);
-  }
-  /**
-  * @returns {number}
-  */
-  get x() {
-    const ret = wasm.__wbg_get_bbox_x(this.__wbg_ptr);
-    return ret;
-  }
-  /**
-  * @param {number} arg0
-  */
-  set x(arg0) {
-    wasm.__wbg_set_bbox_x(this.__wbg_ptr, arg0);
-  }
-  /**
-  * @returns {number}
-  */
-  get y() {
-    const ret = wasm.__wbg_get_bbox_y(this.__wbg_ptr);
-    return ret;
-  }
-  /**
-  * @param {number} arg0
-  */
-  set y(arg0) {
-    wasm.__wbg_set_bbox_y(this.__wbg_ptr, arg0);
-  }
-  /**
-  * @returns {number}
-  */
-  get width() {
-    const ret = wasm.__wbg_get_bbox_width(this.__wbg_ptr);
-    return ret;
-  }
-  /**
-  * @param {number} arg0
-  */
-  set width(arg0) {
-    wasm.__wbg_set_bbox_width(this.__wbg_ptr, arg0);
-  }
-  /**
-  * @returns {number}
-  */
-  get height() {
-    const ret = wasm.__wbg_get_bbox_height(this.__wbg_ptr);
-    return ret;
-  }
-  /**
-  * @param {number} arg0
-  */
-  set height(arg0) {
-    wasm.__wbg_set_bbox_height(this.__wbg_ptr, arg0);
-  }
-};
 var RenderedImageFinalization = typeof FinalizationRegistry === "undefined" ? { register: () => {
 }, unregister: () => {
 } } : new FinalizationRegistry((ptr) => wasm.__wbg_renderedimage_free(ptr >>> 0));
@@ -338,79 +261,6 @@ var Resvg = class {
       wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
     }
   }
-  /**
-  * Calculate a maximum bounding box of all visible elements in this SVG.
-  *
-  * Note: path bounding box are approx values.
-  * @returns {BBox | undefined}
-  */
-  innerBBox() {
-    const ret = wasm.resvg_innerBBox(this.__wbg_ptr);
-    return ret === 0 ? void 0 : BBox.__wrap(ret);
-  }
-  /**
-  * Calculate a maximum bounding box of all visible elements in this SVG.
-  * This will first apply transform.
-  * Similar to `SVGGraphicsElement.getBBox()` DOM API.
-  * @returns {BBox | undefined}
-  */
-  getBBox() {
-    const ret = wasm.resvg_getBBox(this.__wbg_ptr);
-    return ret === 0 ? void 0 : BBox.__wrap(ret);
-  }
-  /**
-  * Use a given `BBox` to crop the svg. Currently this method simply changes
-  * the viewbox/size of the svg and do not move the elements for simplicity
-  *
-  * # Arguments
-  * * `bbox` - The bounding box to crop to
-  * * `padding` - Optional bleed area around the crop box (default: 0.0)
-  * * `square` - Optional flag to make the crop area square using the larger dimension (default: false)
-  * @param {BBox} bbox
-  * @param {number | undefined} [padding]
-  * @param {boolean | undefined} [square]
-  */
-  cropByBBox(bbox, padding, square) {
-    _assertClass(bbox, BBox);
-    wasm.resvg_cropByBBox(this.__wbg_ptr, bbox.__wbg_ptr, !isLikeNone(padding), isLikeNone(padding) ? 0 : padding, isLikeNone(square) ? 16777215 : square ? 1 : 0);
-  }
-  /**
-  * @returns {Array<any>}
-  */
-  imagesToResolve() {
-    try {
-      const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-      wasm.resvg_imagesToResolve(retptr, this.__wbg_ptr);
-      var r0 = getInt32Memory0()[retptr / 4 + 0];
-      var r1 = getInt32Memory0()[retptr / 4 + 1];
-      var r2 = getInt32Memory0()[retptr / 4 + 2];
-      if (r2) {
-        throw takeObject(r1);
-      }
-      return takeObject(r0);
-    } finally {
-      wasm.__wbindgen_add_to_stack_pointer(16);
-    }
-  }
-  /**
-  * @param {string} href
-  * @param {Uint8Array} buffer
-  */
-  resolveImage(href, buffer) {
-    try {
-      const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-      const ptr0 = passStringToWasm0(href, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-      const len0 = WASM_VECTOR_LEN;
-      wasm.resvg_resolveImage(retptr, this.__wbg_ptr, ptr0, len0, addHeapObject(buffer));
-      var r0 = getInt32Memory0()[retptr / 4 + 0];
-      var r1 = getInt32Memory0()[retptr / 4 + 1];
-      if (r1) {
-        throw takeObject(r0);
-      }
-    } finally {
-      wasm.__wbindgen_add_to_stack_pointer(16);
-    }
-  }
 };
 async function __wbg_load(module, imports) {
   if (typeof Response === "function" && module instanceof Response) {
@@ -439,6 +289,10 @@ async function __wbg_load(module, imports) {
 function __wbg_get_imports() {
   const imports = {};
   imports.wbg = {};
+  imports.wbg.__wbg_new_28c511d9baebfa89 = function(arg0, arg1) {
+    const ret = new Error(getStringFromWasm0(arg0, arg1));
+    return addHeapObject(ret);
+  };
   imports.wbg.__wbindgen_memory = function() {
     const ret = wasm.memory;
     return addHeapObject(ret);
@@ -456,10 +310,6 @@ function __wbg_get_imports() {
   };
   imports.wbg.__wbg_new_63b92bc8671ed464 = function(arg0) {
     const ret = new Uint8Array(getObject(arg0));
-    return addHeapObject(ret);
-  };
-  imports.wbg.__wbg_new_28c511d9baebfa89 = function(arg0, arg1) {
-    const ret = new Error(getStringFromWasm0(arg0, arg1));
     return addHeapObject(ret);
   };
   imports.wbg.__wbg_values_839f3396d5aac002 = function(arg0) {
@@ -497,18 +347,6 @@ function __wbg_get_imports() {
     var len1 = WASM_VECTOR_LEN;
     getInt32Memory0()[arg0 / 4 + 1] = len1;
     getInt32Memory0()[arg0 / 4 + 0] = ptr1;
-  };
-  imports.wbg.__wbg_new_16b304a2cfa7ff4a = function() {
-    const ret = new Array();
-    return addHeapObject(ret);
-  };
-  imports.wbg.__wbindgen_string_new = function(arg0, arg1) {
-    const ret = getStringFromWasm0(arg0, arg1);
-    return addHeapObject(ret);
-  };
-  imports.wbg.__wbg_push_a5b05aedc7234f9f = function(arg0, arg1) {
-    const ret = getObject(arg0).push(getObject(arg1));
-    return ret;
   };
   imports.wbg.__wbg_length_c20a40f15020d68a = function(arg0) {
     const ret = getObject(arg0).length;

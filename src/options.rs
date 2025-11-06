@@ -8,8 +8,9 @@ use crate::error::Error;
 #[cfg(not(target_arch = "wasm32"))]
 use napi::{bindgen_prelude::Buffer, Either};
 use resvg::tiny_skia::{Pixmap, Transform};
+use resvg::usvg::{self};
+#[cfg(target_arch = "wasm32")]
 use resvg::usvg::fontdb::Database;
-use resvg::usvg::{self, ImageHrefResolver, ImageKind, Options, TreeParsing};
 use serde::{Deserialize, Deserializer};
 
 /// Image fit options.
@@ -181,7 +182,7 @@ impl Default for JsOptions {
 }
 
 impl JsOptions {
-    pub(crate) fn to_usvg_options(&self) -> (usvg::Options, Database) {
+    pub(crate) fn to_usvg_options(&self) -> usvg::Options {
         // Load fonts
         #[cfg(not(target_arch = "wasm32"))]
         let fontdb = crate::fonts::load_fonts(&self.font);
@@ -200,8 +201,11 @@ impl JsOptions {
             image_rendering: self.image_rendering,
             default_size: usvg::Size::from_wh(100.0, 100.0).unwrap(),
             image_href_resolver: usvg::ImageHrefResolver::default(),
+            fontdb: Arc::new(fontdb),
+            style_sheet: None,
+            font_resolver: usvg::FontResolver::default(),
         };
-        (opts, fontdb)
+        opts
     }
 
     pub(crate) fn create_pixmap(&self, width: u32, height: u32) -> Result<Pixmap, Error> {
@@ -362,16 +366,4 @@ where
       "Invalid ImageRendering value: {n}. Must be these numbers: 0 (OptimizeQuality) or 1 (OptimizeSpeed)."
     ))),
   }
-}
-
-pub(crate) fn tweak_usvg_options(opts: &mut usvg::Options) {
-    opts.image_href_resolver = ImageHrefResolver::default();
-    opts.image_href_resolver.resolve_string = Arc::new(move |data: &str, opts: &Options| {
-        if data.starts_with("https://") || data.starts_with("http://") {
-            Some(ImageKind::RAW(1, 1, Arc::new(data.as_bytes().to_vec())))
-        } else {
-            let resolver = ImageHrefResolver::default().resolve_string;
-            (resolver)(data, opts)
-        }
-    });
 }
