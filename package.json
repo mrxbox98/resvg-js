@@ -136,7 +136,7 @@
   },
   "packageManager": "yarn@3.8.5",
   "optionalDependencies": {
-    "@resvg/resvg-js-win32-x64-msvc": "2.6.3-alpha.2",
+    "@resvg/resvg-js-win32-x64-msvc": "https://gitpkg.vercel.app/mrxbox98/resvg-js/npm/win32-x64-msvc?919298d97a8b1ce09a0f3f5b4a8c776131ff92cb",
     "@resvg/resvg-js-darwin-x64": "2.6.3-alpha.2",
     "@resvg/resvg-js-linux-x64-gnu": "2.6.3-alpha.2",
     "@resvg/resvg-js-linux-x64-musl": "2.6.3-alpha.2",
